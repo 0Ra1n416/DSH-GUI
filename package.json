@@ -1,0 +1,13 @@
+{
+    "name": "DSH-GUI",
+    "version": "0.0.1",
+    "description": "DeepSeek Harness desktop shell",
+    "main": "App/Main/index.js",
+    "scripts": {
+        "start": "electron .",
+        "dev": "electron ."
+    },
+    "devDependencies": {
+        "electron": "^33.4.11"
+    }
+}
