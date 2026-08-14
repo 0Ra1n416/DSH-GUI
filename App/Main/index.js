@@ -1,18 +1,135 @@
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, Menu, nativeImage, screen, shell, Tray } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
 
-const URL = 'http://127.0.0.1:3080/';
+// 配置：从 Config/config.json 读取 host / port 等启动参数
+const codeDir = path.join(__dirname, '..', '..');
+const CONFIG_PATH = path.join(codeDir, 'Config', 'config.json');
 
+function loadConfig() {
+    const defaults = { host: '127.0.0.1', port: 3080 };
+    try {
+        const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+        return { ...defaults, ...cfg };
+    } catch (err) {
+        console.warn('[config] 读取 config.json 失败，使用默认值：', err.message);
+        return defaults;
+    }
+}
+
+const CONFIG = loadConfig();
+const URL_DSH = `http://${CONFIG.host}:${CONFIG.port}/`;
+const DSH_ORIGIN = new URL(URL_DSH).origin;
+
+// 全局状态
 let backendProcess = null;
-let splashWindow = null;   // 启动动画窗口
-let mainWindow = null;     // 主窗口
+let splashWindow = null;      // 启动动画窗口
+let mainWindow = null;        // 主窗口
+let tray = null;              // 系统托盘（必须持有引用，否则会被 GC 回收）
+let isQuitting = false;       // 是否正在真正退出（用于"关闭到托盘"判断）
+let restartDialogOpen = false;// 后端异常对话框防重入
+let zoomLevel = 0;            // 页面缩放级别
+let logStream = null;         // 日志文件流
 
-// ===== 单实例锁：重复启动时聚焦已有窗口，避免多个后端抢 3080 端口 =====
+// 单实例锁
 const gotTheLock = app.requestSingleInstanceLock();
 
-// 根目录
-const codeDir = path.join(__dirname, '..', '..');
+// Windows 任务栏分组 / 通知标识
+app.setAppUserModelId('DSH-GUI');
+
+// 日志目录（userData = %APPDATA%\DSH-GUI）
+const logDir = path.join(app.getPath('userData'), 'logs');
+
+// 日志：终端 + 文件
+function initLogStream() {
+    try {
+        fs.mkdirSync(logDir, { recursive: true });
+        const logFile = path.join(logDir, 'backend.log');
+        // 超过 1MB 轮转，最多保留 5 份历史
+        try {
+            const st = fs.statSync(logFile);
+            if (st.size > 1024 * 1024) {
+                fs.renameSync(logFile, path.join(logDir, `backend-${Date.now()}.log`));
+                const olds = fs.readdirSync(logDir).filter((n) => n.startsWith('backend-')).sort();
+                while (olds.length > 5) fs.unlinkSync(path.join(logDir, olds.shift()));
+            }
+        } catch (e) { /* 文件不存在等情况，忽略 */ }
+        logStream = fs.createWriteStream(logFile, { flags: 'a' });
+    } catch (err) {
+        console.error('[log] init failed:', err.message);
+    }
+}
+
+function appLog(tag, text) {
+    console.log(`[${tag}]`, text);
+    try {
+        if (!logStream) initLogStream();
+        logStream.write(`[${new Date().toISOString()}] [${tag}] ${text}\n`);
+    } catch (e) { /* 日志写失败不影响主流程 */ }
+}
+
+// 窗口状态记忆
+function loadWindowState() {
+    try {
+        const p = path.join(app.getPath('userData'), 'window-state.json');
+        if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
+    } catch (e) { /* 文件损坏则回退默认 */ }
+    return { bounds: null, isMaximized: false, zoomLevel: 0 };
+}
+
+function saveWindowState(win) {
+    try {
+        const state = {
+            bounds: win.getNormalBounds(),
+            isMaximized: win.isMaximized(),
+            zoomLevel: zoomLevel,
+        };
+        fs.writeFileSync(path.join(app.getPath('userData'), 'window-state.json'), JSON.stringify(state));
+    } catch (e) { /* 忽略 */ }
+}
+
+// 上次窗口位置是否仍落在某个显示器内（防止副屏移除后窗口跑到屏幕外）
+function isOnScreen(b) {
+    if (!b) return false;
+    return screen.getAllDisplays().some((d) => {
+        const a = d.workArea;
+        return b.x < a.x + a.width && b.x + b.width > a.x && b.y < a.y + a.height && b.y + b.height > a.y;
+    });
+}
+
+// 后端异常处理（弹窗：重启 / 退出）
+function handleBackendDown(reason) {
+    if (isQuitting || restartDialogOpen) return;
+    restartDialogOpen = true;
+    const parent = (mainWindow && !mainWindow.isDestroyed())
+        ? mainWindow
+        : (splashWindow && !splashWindow.isDestroyed() ? splashWindow : undefined);
+    dialog.showMessageBox(parent, {
+        type: 'error',
+        title: 'DeepSeek Harness',
+        message: 'DSH 后端已停止',
+        detail: reason + '\n\n可以立即重启后端，或退出应用。',
+        buttons: ['重启后端', '退出'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+    }).then(({ response }) => {
+        restartDialogOpen = false;
+        if (response === 0) {
+            try {
+                backendProcess = startBackend();
+                appLog('backend', 'Restarted.');
+            } catch (err) {
+                appLog('backend', 'Restart failed: ' + err.message);
+                handleBackendDown('重启失败：' + err.message);
+            }
+        } else {
+            isQuitting = true;
+            app.quit();
+        }
+    }).catch(() => { restartDialogOpen = false; });
+}
 
 // 启动 DSH 服务
 function startBackend() {
@@ -27,12 +144,14 @@ function startBackend() {
         cwd = codeDir;
     }
 
-    // Windows 下 spawn 无法直接执行 .cmd/.bat，必须通过 cmd.exe /c 调用。
-    // 注意：必须配合 windowsVerbatimArguments，路径两边的引号才能原样传给 cmd.exe
-    // （否则 libuv 会把引号转义成 \"，cmd.exe 无法识别；路径含空格时必须有引号）。
+    // 把 config.json 里的 host / port 转成 dsh web 的命令行参数，交给 start-dsh.cmd 原样转发
+    const dshArgs = [];
+    if (CONFIG.host) dshArgs.push('--host', CONFIG.host);
+    if (CONFIG.port) dshArgs.push('--port', String(CONFIG.port));
+
     const backend = spawn(
         'cmd.exe',
-        ['/c', `"${cmd}"`],
+        ['/c', `"${cmd}" ${dshArgs.join(' ')}`],
         {
             cwd: cwd,
             windowsHide: true,   // 隐藏命令行黑窗口
@@ -43,30 +162,97 @@ function startBackend() {
         }
     );
 
-    // 把后端的日志转发到 Electron 的终端
-    backend.stdout.on('data', (d) => console.log('[backend]', d.toString().trim()));
-    backend.stderr.on('data', (d) => console.error('[backend]', d.toString().trim()));
+    const pid = backend.pid;
+    // 把后端的日志转发到 Electron 的终端和日志文件
+    backend.stdout.on('data', (d) => appLog('backend', d.toString().trim()));
+    backend.stderr.on('data', (d) => appLog('backend', d.toString().trim()));
     backend.on('exit', (code) => {
-        console.log('[backend] Exit, code =', code);
-        // 后端异常退出时检查 3080 是否已被另一个 DSH 占用
+        // 已重启出新进程时，旧进程的退出事件直接忽略
+        if (!backendProcess || backendProcess.pid !== pid) return;
+        appLog('backend', 'Exit, code = ' + code);
+        if (isQuitting) return;
         if (code !== 0) {
-            fetch(URL).then((res) => {
-                if (res.ok) console.warn('[backend] Exited early, but 3080 is already serving - will connect to the existing instance.');
-            }).catch(() => {});
+            // 检查后端端口是否已被另一个 DSH 占用
+            fetch(URL_DSH).then((res) => {
+                if (res.ok) {
+                    appLog('backend', `Exited early, but ${CONFIG.port} is already serving - will connect to the existing instance.`);
+                } else {
+                    handleBackendDown('后端异常退出（code=' + code + '）。');
+                }
+            }).catch(() => handleBackendDown('后端异常退出（code=' + code + '）。'));
         }
     });
     backend.on('error', (err) => {
-        console.error('[backend] Failed to start:', err.message);
-        if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
-        dialog.showErrorBox('Error', 'Failed to start DSH: ' + err.message);
+        if (!backendProcess || backendProcess.pid !== pid) return;
+        appLog('backend', 'Failed to start: ' + err.message);
         backendProcess = null;
-        app.quit();
+        handleBackendDown('后端启动失败：' + err.message);
     });
 
     return backend;
 }
 
-// 启动动画（Splash）窗口：后台就绪前显示在屏幕中央
+// 手动重启后端（托盘菜单）
+function restartBackend() {
+    if (backendProcess) {
+        if (process.platform === 'win32') {
+            spawnSync('taskkill', ['/pid', String(backendProcess.pid), '/T', '/F']);
+        } else {
+            backendProcess.kill();
+        }
+    }
+    try {
+        backendProcess = startBackend();
+        appLog('backend', 'Manually restarted.');
+    } catch (err) {
+        appLog('backend', 'Restart failed: ' + err.message);
+        handleBackendDown('重启失败：' + err.message);
+    }
+}
+
+// 系统托盘
+function showMainFromTray() {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+    } else if (splashWindow && !splashWindow.isDestroyed()) {
+        splashWindow.focus();
+    }
+}
+
+function setAutoLaunch(enabled) {
+    if (app.isPackaged) {
+        app.setLoginItemSettings({ openAtLogin: enabled });
+    } else {
+        // 开发模式：注册 electron.exe + 项目目录（项目移动后需重新开关一次）
+        app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args: [app.getAppPath()] });
+    }
+}
+
+function createTray() {
+    const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'Assets', 'dsh.ico'));
+    tray = new Tray(icon.resize({ width: 16, height: 16 }));
+    tray.setToolTip('DeepSeek Harness');
+    tray.setContextMenu(Menu.buildFromTemplate([
+        { label: '显示主窗口', click: showMainFromTray },
+        { label: '重启后端', click: restartBackend },
+        { label: '打开日志文件夹', click: () => shell.openPath(logDir) },
+        { type: 'separator' },
+        {
+            label: '开机自启',
+            type: 'checkbox',
+            checked: app.getLoginItemSettings().openAtLogin,
+            click: (item) => setAutoLaunch(item.checked),
+        },
+        { type: 'separator' },
+        { label: '退出 DeepSeek Harness', click: () => { isQuitting = true; app.quit(); } },
+    ]));
+    tray.on('click', showMainFromTray);
+    appLog('app', 'Tray created.');
+}
+
+// 启动动画（Splash）窗口
 function createSplash() {
     splashWindow = new BrowserWindow({
         width: 460,   // 比卡片大一圈，给 CSS 阴影留出绘制空间
@@ -87,9 +273,9 @@ function createSplash() {
     });
     splashWindow.setAlwaysOnTop(true, 'screen-saver');
     splashWindow.loadFile(path.join(__dirname, '..', 'Pages', 'splash.html'))
-        .catch((err) => console.error('[window] Failed to load splash:', err.message));
+        .catch((err) => appLog('window', 'Failed to load splash: ' + err.message));
     splashWindow.on('closed', () => { splashWindow = null; });
-    console.log('[window] Splash shown.');
+    appLog('window', 'Splash shown.');
 }
 
 // 轮询等待就绪
@@ -99,7 +285,7 @@ async function waitForBackend(url, timeoutMs = 600000) {
         try {
             const res = await fetch(url);
             if (res.ok) {
-                console.log('[backend] Ready.');
+                appLog('backend', 'Ready.');
                 return true;
             }
         } catch (e) {
@@ -110,26 +296,34 @@ async function waitForBackend(url, timeoutMs = 600000) {
     return false;
 }
 
+// 主窗口
 async function createWindow() {
-    const ready = await waitForBackend(URL);
+    const ready = await waitForBackend(URL_DSH);
     if (!ready) {
-        console.error('[backend] Start Timeout.');
+        appLog('backend', 'Start Timeout.');
         if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
         dialog.showErrorBox('Error', 'Failed to start DSH. Please check the logs.');
+        isQuitting = true;
         app.quit();
         return;
     }
 
+    // 恢复上次的窗口位置、大小与缩放
+    const st = loadWindowState();
+    const useBounds = isOnScreen(st.bounds);
+
     // 创建一个浏览器窗口（先隐藏，等页面渲染完成再显示，避免白屏）
     mainWindow = new BrowserWindow({
-        width: 1600,
-        height: 900,
+        width: useBounds ? st.bounds.width : 1600,
+        height: useBounds ? st.bounds.height : 900,
+        x: useBounds ? st.bounds.x : undefined,
+        y: useBounds ? st.bounds.y : undefined,
         show: false,
         icon: path.join(__dirname, '..', 'Assets', 'dsh.ico'),
         backgroundColor: '#0b0e16',   // 与 DSH 深色主题一致，防止加载时白闪
         webPreferences: {
             // 指定预加载脚本
-            preload: path.join(__dirname, '..', 'Preload','preload.js'),
+            preload: path.join(__dirname, '..', 'Preload', 'preload.js'),
 
             nodeIntegration: false,
             contextIsolation: true,
@@ -137,7 +331,67 @@ async function createWindow() {
     });
     // 去掉Menu
     mainWindow.removeMenu();
+    if (st.isMaximized) mainWindow.maximize();
+    if (st.zoomLevel) {
+        zoomLevel = st.zoomLevel;
+        mainWindow.webContents.setZoomLevel(zoomLevel);
+    }
+
+    // 关闭 → 最小化到托盘；真正退出时 isQuitting 为 true
+    mainWindow.on('close', (e) => {
+        saveWindowState(mainWindow);
+        if (!isQuitting) {
+            e.preventDefault();
+            mainWindow.hide();
+        }
+    });
     mainWindow.on('closed', () => { mainWindow = null; });
+
+    // 外链与 window.open：交给系统浏览器，防止应用窗口被"劫持"
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (url.startsWith('http://') || url.startsWith('https://')) shell.openExternal(url);
+        return { action: 'deny' };
+    });
+    mainWindow.webContents.on('will-navigate', (event, url) => {
+        let origin;
+        try { origin = new URL(url).origin; } catch (err) { return; }
+        if (origin !== DSH_ORIGIN) {
+            event.preventDefault();
+            shell.openExternal(url);
+        }
+    });
+
+    // 快捷键：Ctrl+R 刷新 / Ctrl+Shift+R 强制刷新 / F11 全屏 / F12 开发者工具 / Ctrl+=,-,0 缩放
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+        if (input.type !== 'keyDown') return;
+        const mod = input.control || input.meta;
+        const key = (input.key || '').toLowerCase();
+        const setZoom = (z) => {
+            zoomLevel = Math.max(-2, Math.min(2, z));
+            mainWindow.webContents.setZoomLevel(zoomLevel);
+        };
+        if (mod && key === 'r') {
+            event.preventDefault();
+            if (input.shift) mainWindow.webContents.reloadIgnoringCache();
+            else mainWindow.webContents.reload();
+        } else if (input.key === 'F11') {
+            event.preventDefault();
+            mainWindow.setFullScreen(!mainWindow.isFullScreen());
+        } else if (input.key === 'F12') {
+            event.preventDefault();
+            if (mainWindow.webContents.isDevToolsOpened()) mainWindow.webContents.closeDevTools();
+            else mainWindow.webContents.openDevTools();
+        } else if (mod && (key === '=' || key === '+')) {
+            event.preventDefault();
+            setZoom(zoomLevel + 0.1);
+        } else if (mod && key === '-') {
+            event.preventDefault();
+            setZoom(zoomLevel - 0.1);
+        } else if (mod && key === '0') {
+            event.preventDefault();
+            setZoom(0);
+        }
+    });
 
     // 页面渲染完成：显示主窗口并关闭启动动画
     let shown = false;
@@ -146,7 +400,7 @@ async function createWindow() {
         shown = true;
         mainWindow.show();
         if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
-        console.log('[window] DSH ready, main window shown.');
+        appLog('window', 'DSH ready, main window shown.');
     };
     mainWindow.once('ready-to-show', showMainWindow);
     // 兜底：万一 ready-to-show 不触发，加载完成后稍等片刻也关闭启动动画
@@ -155,21 +409,19 @@ async function createWindow() {
     // 加载失败时给出明确提示
     mainWindow.webContents.on('did-fail-load', (_event, code, desc, url, isMainFrame) => {
         if (!isMainFrame || code === -3) return;  // -3 = ERR_ABORTED，忽略
-        console.error('[web] Failed to load:', code, desc, url);
+        appLog('web', `Failed to load: ${code} ${desc} ${url}`);
         if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
         dialog.showErrorBox('Error', `Failed to load DSH: ${desc} (${code})`);
+        isQuitting = true;
         app.quit();
     });
 
     // 加载应用的URL
-    mainWindow.loadURL(URL)  // DSH Web 入口
-        .catch((err) => console.error('[web] loadURL failed:', err.message));
-
-    // 打开开发者工具
-    // mainWindow.webContents.openDevTools();
+    mainWindow.loadURL(URL_DSH)  // DSH Web 入口
+        .catch((err) => appLog('web', 'loadURL failed: ' + err.message));
 }
 
-// 当 Electron 完成初始化并准备创建窗口时，调用 createWindow 函数
+// 生命周期
 if (!gotTheLock) {
     // 已有实例在运行：直接退出（会触发已有实例的 second-instance 事件）
     app.quit();
@@ -187,22 +439,28 @@ if (!gotTheLock) {
     });
 
     app.whenReady().then(async () => {
-        createSplash();  // 先显示启动动画
+        createSplash();   // 先显示启动动画
+        createTray();     // 系统托盘
 
         try {
             backendProcess = startBackend();  // 启动DSH
         } catch (err) {
-            console.error('[backend]', err.message);
+            appLog('backend', err.message);
             if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
             dialog.showErrorBox('Error', err.message);
+            isQuitting = true;
             app.quit();
             return;
         }
 
         await createWindow();  // 等就绪后再建窗口
 
-        // macOS 特定：当点击 dock 图标且没有窗口打开时，重新创建一个窗口
+        // macOS 特定：当点击 dock 图标且没有窗口打开时，重新创建/恢复窗口
         app.on('activate', function () {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.show();
+                return;
+            }
             if (BrowserWindow.getAllWindows().length === 0) {
                 if (!splashWindow) createSplash();
                 createWindow();
@@ -213,6 +471,7 @@ if (!gotTheLock) {
 
 // 当应用退出时，杀掉后端子进程
 app.on('before-quit', () => {
+    isQuitting = true;
     if (backendProcess) {
         if (process.platform === 'win32') {
             // 用 taskkill /T /F 递归杀掉整个进程树
@@ -221,6 +480,9 @@ app.on('before-quit', () => {
             backendProcess.kill();
         }
         backendProcess = null;
+    }
+    if (logStream) {
+        try { logStream.end(); } catch (e) { /* 忽略 */ }
     }
 });
 

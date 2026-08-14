@@ -1,1 +1,4 @@
 node_modules/
+
+# dsh web 运行时生成的端口配置
+Config/

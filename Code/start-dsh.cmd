@@ -12,7 +12,7 @@ if errorlevel 1 (
 )
 
 rem --- Start DeepSeek Harness Web---
-npx -y @deepseek-ai/dsh web
+npx -y @deepseek-ai/dsh web %*
 
 pause >nul
 endlocal
