@@ -1,7 +1,8 @@
-const { app, BrowserWindow, dialog, Menu, nativeImage, screen, shell, Tray } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, screen, shell, Tray } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
+const pluginManager = require('./plugin-manager');
 
 // 配置：从 Config/config.json 读取 host / port 等启动参数
 const codeDir = path.join(__dirname, '..', '..');
@@ -18,15 +19,19 @@ function loadConfig() {
     }
 }
 
-const CONFIG = loadConfig();
-const URL_DSH = `http://${CONFIG.host}:${CONFIG.port}/`;
-const DSH_ORIGIN = new URL(URL_DSH).origin;
+// 读取"实际"后端地址：dsh web 在端口被占用/系统保留时会回退端口，
+// 并把实际端口写回 Config/config.json —— 每次使用时重新读取，紧跟实际状态
+function loadDshUrl() {
+    const cfg = loadConfig();
+    return `http://${cfg.host}:${cfg.port}/`;
+}
 
 // 全局状态
 let backendProcess = null;
 let splashWindow = null;      // 启动动画窗口
 let mainWindow = null;        // 主窗口
 let tray = null;              // 系统托盘（必须持有引用，否则会被 GC 回收）
+let pluginManagerWindow = null; // 插件管理器窗口
 let isQuitting = false;       // 是否正在真正退出（用于"关闭到托盘"判断）
 let restartDialogOpen = false;// 后端异常对话框防重入
 let zoomLevel = 0;            // 页面缩放级别
@@ -120,6 +125,7 @@ function handleBackendDown(reason) {
             try {
                 backendProcess = startBackend();
                 appLog('backend', 'Restarted.');
+                reloadMainWindowWhenReady();
             } catch (err) {
                 appLog('backend', 'Restart failed: ' + err.message);
                 handleBackendDown('重启失败：' + err.message);
@@ -144,10 +150,13 @@ function startBackend() {
         cwd = codeDir;
     }
 
-    // 把 config.json 里的 host / port 转成 dsh web 的命令行参数，交给 start-dsh.cmd 原样转发
+    // 命令行参数：插件管理器覆盖层 --patch 必须排在 host / port 之前，
+    // 再附上 config.json 里的 host / port（每次启动都重新读取，跟上回退后的端口）
+    const cfg = loadConfig();
     const dshArgs = [];
-    if (CONFIG.host) dshArgs.push('--host', CONFIG.host);
-    if (CONFIG.port) dshArgs.push('--port', String(CONFIG.port));
+    dshArgs.push(...pluginManager.getManagerPatchArgs());
+    if (cfg.host) dshArgs.push('--host', cfg.host);
+    if (cfg.port) dshArgs.push('--port', String(cfg.port));
 
     const backend = spawn(
         'cmd.exe',
@@ -173,9 +182,9 @@ function startBackend() {
         if (isQuitting) return;
         if (code !== 0) {
             // 检查后端端口是否已被另一个 DSH 占用
-            fetch(URL_DSH).then((res) => {
+            fetch(loadDshUrl()).then((res) => {
                 if (res.ok) {
-                    appLog('backend', `Exited early, but ${CONFIG.port} is already serving - will connect to the existing instance.`);
+                    appLog('backend', `Exited early, but ${loadConfig().port} is already serving - will connect to the existing instance.`);
                 } else {
                     handleBackendDown('后端异常退出（code=' + code + '）。');
                 }
@@ -192,7 +201,21 @@ function startBackend() {
     return backend;
 }
 
-// 手动重启后端（托盘菜单）
+// 等后端就绪后自动刷新主窗口：后端重启后已加载的页面还停留在旧插件树/旧外观上，
+// 必须重新拉取一次页面（等效于手动 Ctrl+R）
+async function reloadMainWindowWhenReady() {
+    const ready = await waitForBackend();
+    if (!ready.ok) {
+        appLog('window', 'Backend not ready after restart, skip window reload.');
+        return;
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.reload();
+        appLog('window', 'Backend ready after restart, main window reloaded.');
+    }
+}
+
+// 手动重启后端（托盘菜单 / 插件管理器）
 function restartBackend() {
     if (backendProcess) {
         if (process.platform === 'win32') {
@@ -204,6 +227,7 @@ function restartBackend() {
     try {
         backendProcess = startBackend();
         appLog('backend', 'Manually restarted.');
+        reloadMainWindowWhenReady();
     } catch (err) {
         appLog('backend', 'Restart failed: ' + err.message);
         handleBackendDown('重启失败：' + err.message);
@@ -236,6 +260,7 @@ function createTray() {
     tray.setToolTip('DeepSeek Harness');
     tray.setContextMenu(Menu.buildFromTemplate([
         { label: '显示主窗口', click: showMainFromTray },
+        { label: '插件管理', click: openPluginManager },
         { label: '重启后端', click: restartBackend },
         { label: '打开日志文件夹', click: () => shell.openPath(logDir) },
         { type: 'separator' },
@@ -250,6 +275,46 @@ function createTray() {
     ]));
     tray.on('click', showMainFromTray);
     appLog('app', 'Tray created.');
+}
+
+// 打开插件管理器窗口（本地页面，使用专属 preload，与远程 DSH 页面权限隔离）
+function openPluginManager() {
+    if (pluginManagerWindow && !pluginManagerWindow.isDestroyed()) {
+        pluginManagerWindow.show();
+        pluginManagerWindow.focus();
+        return;
+    }
+    pluginManagerWindow = new BrowserWindow({
+        width: 880,
+        height: 620,
+        title: '插件管理 - DeepSeek Harness',
+        icon: path.join(__dirname, '..', 'Assets', 'dsh.ico'),
+        backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0e16' : '#f4f6fb',
+        webPreferences: {
+            preload: path.join(__dirname, '..', 'Preload', 'preload-plugins.js'),
+            nodeIntegration: false,
+            contextIsolation: true,
+        },
+    });
+    pluginManagerWindow.removeMenu();
+    // 管理器窗口自己的快捷键：Ctrl+R/F5 刷新、F12 开发者工具
+    pluginManagerWindow.webContents.on('before-input-event', (event, input) => {
+        if (input.type !== 'keyDown') return;
+        const mod = input.control || input.meta;
+        const key = (input.key || '').toLowerCase();
+        if ((mod && key === 'r') || input.key === 'F5') {
+            event.preventDefault();
+            pluginManagerWindow.webContents.reload();
+        } else if (input.key === 'F12') {
+            event.preventDefault();
+            if (pluginManagerWindow.webContents.isDevToolsOpened()) pluginManagerWindow.webContents.closeDevTools();
+            else pluginManagerWindow.webContents.openDevTools();
+        }
+    });
+    pluginManagerWindow.loadFile(path.join(__dirname, '..', 'Pages', 'plugins.html'))
+        .catch((err) => appLog('window', 'Failed to load plugin manager: ' + err.message));
+    pluginManagerWindow.on('closed', () => { pluginManagerWindow = null; });
+    appLog('window', 'Plugin manager opened.');
 }
 
 // 启动动画（Splash）窗口
@@ -278,28 +343,30 @@ function createSplash() {
     appLog('window', 'Splash shown.');
 }
 
-// 轮询等待就绪
-async function waitForBackend(url, timeoutMs = 600000) {
+// 轮询等待就绪：每次轮询重新读取 Config/config.json，
+// 自动跟上 dsh web 因端口冲突/系统保留而回退后的实际端口
+async function waitForBackend(timeoutMs = 600000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
+        const url = loadDshUrl();
         try {
             const res = await fetch(url);
             if (res.ok) {
-                appLog('backend', 'Ready.');
-                return true;
+                appLog('backend', `Ready at ${url}`);
+                return { ok: true, url };
             }
         } catch (e) {
             // 还没就绪，继续等待
         }
         await new Promise((r) => setTimeout(r, 1000));
     }
-    return false;
+    return { ok: false, url: loadDshUrl() };
 }
 
 // 主窗口
 async function createWindow() {
-    const ready = await waitForBackend(URL_DSH);
-    if (!ready) {
+    const ready = await waitForBackend();
+    if (!ready.ok) {
         appLog('backend', 'Start Timeout.');
         if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
         dialog.showErrorBox('Error', 'Failed to start DSH. Please check the logs.');
@@ -307,6 +374,10 @@ async function createWindow() {
         app.quit();
         return;
     }
+
+    // 后端实际就绪的地址（可能因端口回退而不同于 Config 里的原值）
+    const dshUrl = ready.url;
+    const DSH_ORIGIN = new URL(dshUrl).origin;   // 本窗口实际加载的源（外链判断用）
 
     // 恢复上次的窗口位置、大小与缩放
     const st = loadWindowState();
@@ -417,7 +488,7 @@ async function createWindow() {
     });
 
     // 加载应用的URL
-    mainWindow.loadURL(URL_DSH)  // DSH Web 入口
+    mainWindow.loadURL(dshUrl)  // DSH Web 入口
         .catch((err) => appLog('web', 'loadURL failed: ' + err.message));
 }
 
@@ -441,6 +512,7 @@ if (!gotTheLock) {
     app.whenReady().then(async () => {
         createSplash();   // 先显示启动动画
         createTray();     // 系统托盘
+        pluginManager.initPluginManager({ ipcMain, restartBackend, appLog, shell });
 
         try {
             backendProcess = startBackend();  // 启动DSH

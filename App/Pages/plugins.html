@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>外部插件管理 - DeepSeek Harness</title>
+    <link rel="stylesheet" href="plugins.css">
+</head>
+<body>
+    <header>
+        <h1>外部插件管理 <span>·</span> DeepSeek Harness</h1>
+        <div class="spacer"></div>
+        <button class="btn btn--primary" id="headerInstallBtn">安装插件</button>
+        <button class="btn" id="openDirBtn">打开插件目录</button>
+        <button class="btn" id="restartBtn">重启后端</button>
+    </header>
+
+    <!-- 主视图：插件列表 -->
+    <div class="view" id="viewMain">
+        <div class="list-wrap" id="listWrap">
+            <div class="empty" id="emptyTip">正在读取插件列表…</div>
+        </div>
+        <div class="hint" id="restartHint">⚠ 有改动未生效：插件树在启动时组装，请点击右上角"重启后端"。</div>
+    </div>
+
+    <!-- 二级视图：安装插件 -->
+    <div class="view" id="viewInstall" hidden>
+        <div class="install-head">
+            <button class="btn btn--sm" id="backBtn">← 返回列表</button>
+            <h2>安装插件</h2>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="npm">npm 包</button>
+            <button class="tab" data-tab="local">本地目录</button>
+            <button class="tab" data-tab="git">Git 仓库</button>
+        </div>
+
+        <div class="tab-panel" id="panel-npm">
+            <p class="desc">从 npm 注册表安装已发布的 DSH 插件（需要网络与 pnpm）。</p>
+            <div class="row">
+                <input id="npmInput" type="text" placeholder="例如 @scope/dsh-plugin-demo" spellcheck="false">
+                <button class="btn btn--primary" id="npmInstallBtn">安装</button>
+            </div>
+        </div>
+
+        <div class="tab-panel" id="panel-local" hidden>
+            <p class="desc">从本地目录安装你自己的插件（包内需声明 dsh.bundle）。</p>
+            <div class="mode-group">
+                <label class="radio">
+                    <input type="radio" name="localMode" value="link" checked>
+                    链接安装 <span class="hint-tag">开发模式：直接引用源目录，改代码后重启后端即生效（推荐）</span>
+                </label>
+                <label class="radio">
+                    <input type="radio" name="localMode" value="file">
+                    复制安装 <span class="hint-tag">拷贝一份到插件目录，之后与源目录脱钩</span>
+                </label>
+            </div>
+            <div class="row">
+                <input id="localPathInput" type="text" readonly placeholder="尚未选择插件目录">
+                <button class="btn" id="pickDirBtn">选择目录…</button>
+                <button class="btn btn--primary" id="localInstallBtn">安装</button>
+            </div>
+        </div>
+
+        <div class="tab-panel" id="panel-git" hidden>
+            <p class="desc">从 Git 仓库安装，支持 github:user/repo、git+https://…、git@host:… 等形式。</p>
+            <p class="desc">请确认插件支持该安装方式</p>
+            <div class="row">
+                <input id="gitInput" type="text" placeholder="例如 github:somebody/dsh-plugin-demo" spellcheck="false">
+                <button class="btn btn--primary" id="gitInstallBtn">安装</button>
+            </div>
+        </div>
+
+        <div class="hint show" id="restartHint2">⚠ 安装后需要重启后端才会加载新插件。</div>
+    </div>
+
+    <div class="log-panel">
+        <div class="log-head">
+            <span>命令输出</span>
+            <button id="clearLogBtn">清空</button>
+        </div>
+        <div class="log-body" id="logBody"></div>
+    </div>
+
+    <script src="plugins-renderer.js"></script>
+</body>
+</html>
