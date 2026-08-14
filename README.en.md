@@ -1,6 +1,16 @@
+<div align="center">
+
 # DSH-GUI
 
-[中文](README.md) | **English**
+---
+
+![Static Badge](https://img.shields.io/badge/Desktop-green) ![Static Badge](https://img.shields.io/badge/License-MIT-blue) ![Static Badge](https://img.shields.io/badge/Platform-Windows-yellow)
+
+English | **[中文](README.md)**
+
+</div>
+
+---
 
 A lightweight desktop shell for DeepSeek Harness: wraps the [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) web UI in a native Electron window, with built-in backend hosting, a system tray, and a simple plugin manager.
 

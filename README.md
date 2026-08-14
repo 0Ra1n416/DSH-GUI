@@ -1,6 +1,14 @@
+<div align="center">
+
 # DSH-GUI
 
+![Static Badge](https://img.shields.io/badge/Desktop-green) ![Static Badge](https://img.shields.io/badge/License-MIT-blue) ![Static Badge](https://img.shields.io/badge/Platform-Windows-yellow)
+
 **[English](README.en.md)** | 中文
+
+</div>
+
+---
 
 DeepSeek Harness 的简易桌面壳：用 Electron 把 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) 的 Web 界面装进原生窗口，自带后端托管、系统托盘、简易插件管理器。
 
