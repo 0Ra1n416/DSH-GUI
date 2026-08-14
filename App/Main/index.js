@@ -95,19 +95,28 @@ function isOnScreen(b) {
     });
 }
 
-// 后端异常处理（弹窗：重启 / 退出）
-function handleBackendDown(reason) {
+// 后端异常处理（弹窗：按失败类型给出不同的重启动作）
+// portConflict = 端口绑定失败（EACCES/EADDRINUSE）：
+//   "重启（端口设为 0）"会自动把配置端口改成 0（系统随机分配）再重启；
+//   第二个按钮一律是"退出"。提示中只告知手动修改 Config/config.json。
+// parent 策略：启动阶段（splash 尚在、主窗口未创建）模态挂到 splash 上，
+//   保证弹窗浮在加载画面上方、必须应答，不会"卡在半路"；
+//   运行阶段不带 parent（非模态），托盘菜单/设置窗口仍可正常操作
+function handleBackendDown(reason, opts = {}) {
     if (isQuitting || restartDialogOpen) return;
     restartDialogOpen = true;
-    const parent = (mainWindow && !mainWindow.isDestroyed())
-        ? mainWindow
-        : (splashWindow && !splashWindow.isDestroyed() ? splashWindow : undefined);
+    const portConflict = !!opts.portConflict;
+    const startupPhase = !!(splashWindow && !splashWindow.isDestroyed())
+        && !(mainWindow && !mainWindow.isDestroyed());
+    const parent = startupPhase ? splashWindow : undefined;
     dialog.showMessageBox(parent, {
         type: 'error',
         title: 'DeepSeek Harness',
-        message: 'DSH 后端已停止',
-        detail: reason + '\n\n可以立即重启后端，或退出应用。',
-        buttons: ['重启后端', '退出'],
+        message: portConflict ? 'DSH 后端端口绑定失败' : 'DSH 后端已停止',
+        detail: reason + (portConflict
+            ? '\n\n点击"重启（端口设为 0）"：自动把端口改为 0（系统随机分配）并重启后端。\n如需指定端口，请手动修改项目根目录的 Config/config.json。'
+            : '\n\n可以立即重启后端，或退出应用。'),
+        buttons: portConflict ? ['重启（端口设为 0）', '退出'] : ['重启后端', '退出'],
         defaultId: 0,
         cancelId: 1,
         noLink: true,
@@ -115,12 +124,18 @@ function handleBackendDown(reason) {
         restartDialogOpen = false;
         if (response === 0) {
             try {
+                if (portConflict) {
+                    // 自动把端口改为 0（随机分配），绕开被保留/被占用的端口
+                    const cfg = loadConfig();
+                    settings.saveConfig({ host: cfg.host, port: 0 });
+                    appLog('settings', 'Port bind failed - auto set port=0 and restarting backend.');
+                }
                 backendProcess = startBackend();
                 appLog('backend', 'Restarted.');
                 reloadMainWindowWhenReady();
             } catch (err) {
                 appLog('backend', 'Restart failed: ' + err.message);
-                handleBackendDown('重启失败：' + err.message);
+                handleBackendDown('重启失败：' + err.message, opts);
             }
         } else {
             isQuitting = true;
@@ -165,31 +180,52 @@ function startBackend() {
     );
 
     const pid = backend.pid;
-    // 把后端的日志转发到 Electron 的终端和日志文件
+    // 把后端的日志转发到 Electron 的终端和日志文件；
+    // 同时写入环形缓冲，供退出失败时把关键错误带到日志和对话框中
+    const recentOutput = [];
+    const pushOutput = (text) => {
+        for (const line of text.split(/\r?\n/)) {
+            const t = line.trim();
+            if (!t) continue;
+            recentOutput.push(t);
+            if (recentOutput.length > 40) recentOutput.shift();
+        }
+    };
     announcedUrl = null;   // 每次启动都重置，等待新的公告
     backend.stdout.on('data', (d) => {
         const text = d.toString().trim();
+        pushOutput(text);
         appLog('backend', text);
         // 捕获后端公告的实际地址：配置端口为 0（系统随机分配）时，
         // 这是应用唯一能得知真实端口的途径
         const m = /dsh web:\s+(https?:\/\/[^\s]+)/.exec(text);
         if (m) announcedUrl = m[1].replace(/\/+$/, '');
     });
-    backend.stderr.on('data', (d) => appLog('backend', d.toString().trim()));
+    backend.stderr.on('data', (d) => {
+        const text = d.toString().trim();
+        pushOutput(text);
+        appLog('backend', text);
+    });
     backend.on('exit', (code) => {
         // 已重启出新进程时，旧进程的退出事件直接忽略
         if (!backendProcess || backendProcess.pid !== pid) return;
         appLog('backend', 'Exit, code = ' + code);
         if (isQuitting) return;
         if (code !== 0) {
+            // 关键输出同步落盘（'exit' 早于 stdio 管道排空时也能拿到完整错误）
+            const tail = recentOutput.slice(-12).join('\n');
+            if (tail) appLog('backend', `Backend last output:\n${tail}`);
+            const portConflict = /EACCES|EADDRINUSE/i.test(tail);
+            let reason = `后端异常退出（code=${code}）`;
+            if (tail) reason += `\n\n后端最后输出：\n${tail}`;
             // 检查后端端口是否已被另一个 DSH 占用
             fetch(loadDshUrl()).then((res) => {
                 if (res.ok) {
                     appLog('backend', `Exited early, but ${loadConfig().port} is already serving - will connect to the existing instance.`);
                 } else {
-                    handleBackendDown('后端异常退出（code=' + code + '）。');
+                    handleBackendDown(reason, { portConflict });
                 }
-            }).catch(() => handleBackendDown('后端异常退出（code=' + code + '）。'));
+            }).catch(() => handleBackendDown(reason, { portConflict }));
         }
     });
     backend.on('error', (err) => {
