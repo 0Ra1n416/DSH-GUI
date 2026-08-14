@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>系统设置 - DeepSeek Harness</title>
+    <style>
+        :root {
+            --brand: #4D6BFE;
+            --brand-soft: #8AA4FF;
+            --bg: #0b0e16;
+            --panel: #11151f;
+            --line: rgba(255, 255, 255, 0.07);
+            --text-hi: #EDF1F8;
+            --text-mid: #A9B4C8;
+            --text-lo: #8593AD;
+            --err: #ff6b6b;
+            --ok: #3ddc97;
+            color-scheme: light dark;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html, body { width: 100%; height: 100%; }
+
+        body {
+            background: var(--bg);
+            color: var(--text-hi);
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+            font-size: 13px;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            padding: 16px 20px 12px;
+            border-bottom: 1px solid var(--line);
+            background: linear-gradient(180deg, #10141f, #0d111a);
+        }
+        header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.3px; }
+        header h1 span { color: var(--brand-soft); }
+
+        .form { flex: 1; padding: 18px 20px; display: flex; flex-direction: column; gap: 16px; }
+
+        .field { display: flex; flex-direction: column; gap: 6px; }
+        .field label { font-size: 12px; color: var(--text-mid); }
+        .field .hint { font-size: 11px; color: var(--text-lo); line-height: 1.5; }
+
+        select, input {
+            padding: 9px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            background: rgba(255, 255, 255, 0.03);
+            color: var(--text-hi);
+            font-size: 13px;
+            outline: none;
+        }
+        select:focus, input:focus { border-color: var(--brand); }
+        select option { background: var(--panel); color: var(--text-hi); }
+
+        .btn {
+            align-self: flex-start;
+            padding: 8px 18px;
+            border-radius: 8px;
+            border: 1px solid var(--brand);
+            background: var(--brand);
+            color: #fff;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .btn:hover { background: #3f5be8; }
+        .btn:active { transform: scale(0.97); }
+        .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+        .status {
+            min-height: 18px;
+            font-size: 12px;
+            color: var(--text-lo);
+        }
+        .status.ok { color: var(--ok); }
+        .status.err { color: var(--err); }
+
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg: #f4f6fb;
+                --panel: #ffffff;
+                --line: rgba(15, 23, 42, 0.08);
+                --text-hi: #1a2233;
+                --text-mid: #4a5568;
+                --text-lo: #7a8699;
+                --err: #e5484d;
+                --ok: #179a63;
+                color-scheme: light;
+            }
+            header { background: linear-gradient(180deg, #ffffff, #f4f6fb); }
+            select, input { background: #ffffff; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>系统设置 <span>·</span> DeepSeek Harness</h1>
+    </header>
+
+    <div class="form">
+        <div class="field">
+            <label for="hostInput">监听地址</label>
+            <select id="hostInput">
+                <option value="127.0.0.1">127.0.0.1（仅本机访问）</option>
+            </select>
+            <div class="hint">DSH Web 出于安全考虑目前只允许本机回环地址（0.0.0.0 会被官方拒绝）</div>
+        </div>
+
+        <div class="field">
+            <label for="portInput">端口</label>
+            <input id="portInput" type="text" inputmode="numeric" placeholder="3080" spellcheck="false">
+            <div class="hint">0 = 由系统分配随机端口；端口被占用时后端会启动失败并弹窗提示，不会自动换端口</div>
+        </div>
+
+        <button class="btn" id="saveBtn">保存并重启后端</button>
+        <div class="status" id="statusLine"></div>
+    </div>
+
+    <script>
+        const api = window.dshSettings;
+        const hostInput = document.getElementById('hostInput');
+        const portInput = document.getElementById('portInput');
+        const saveBtn = document.getElementById('saveBtn');
+        const statusLine = document.getElementById('statusLine');
+
+        function setStatus(text, cls) {
+            statusLine.textContent = text;
+            statusLine.className = 'status' + (cls ? ' ' + cls : '');
+        }
+
+        // preload 未加载时的兜底提示
+        if (!api) {
+            setStatus('未检测到 window.dshSettings（preload 未加载），请从托盘菜单重新打开', 'err');
+            saveBtn.disabled = true;
+            throw new Error('preload missing');
+        }
+
+        api.get().then((cfg) => {
+            hostInput.value = cfg.host || '127.0.0.1';
+            portInput.value = cfg.port != null ? String(cfg.port) : '3080';
+        }).catch((err) => setStatus('读取配置失败：' + (err.message || err), 'err'));
+
+        saveBtn.addEventListener('click', async () => {
+            saveBtn.disabled = true;
+            setStatus('正在保存并重启后端…');
+            const res = await api.save({ host: hostInput.value, port: portInput.value.trim() });
+            if (res.ok) {
+                setStatus('已保存，后端正在重启，主窗口就绪后会自动刷新', 'ok');
+                setTimeout(() => window.close(), 2500);   // 2.5 秒后自动关闭
+            } else {
+                setStatus(res.error || '保存失败', 'err');
+                saveBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

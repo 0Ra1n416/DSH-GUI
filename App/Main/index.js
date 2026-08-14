@@ -3,21 +3,11 @@ const path = require('path');
 const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
 const pluginManager = require('./plugin-manager');
+const settings = require('./settings');
 
-// 配置：从 Config/config.json 读取 host / port 等启动参数
+// 配置读取统一走 settings 模块（Config/config.json 的读写、校验、设置窗口 IPC 都在那里）
 const codeDir = path.join(__dirname, '..', '..');
-const CONFIG_PATH = path.join(codeDir, 'Config', 'config.json');
-
-function loadConfig() {
-    const defaults = { host: '127.0.0.1', port: 3080 };
-    try {
-        const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-        return { ...defaults, ...cfg };
-    } catch (err) {
-        console.warn('[config] 读取 config.json 失败，使用默认值：', err.message);
-        return defaults;
-    }
-}
+const loadConfig = settings.loadConfig;
 
 // 读取"实际"后端地址：dsh web 在端口被占用/系统保留时会回退端口，
 // 并把实际端口写回 Config/config.json —— 每次使用时重新读取，紧跟实际状态
@@ -32,10 +22,12 @@ let splashWindow = null;      // 启动动画窗口
 let mainWindow = null;        // 主窗口
 let tray = null;              // 系统托盘（必须持有引用，否则会被 GC 回收）
 let pluginManagerWindow = null; // 插件管理器窗口
+let settingsWindow = null;    // 系统设置窗口
 let isQuitting = false;       // 是否正在真正退出（用于"关闭到托盘"判断）
 let restartDialogOpen = false;// 后端异常对话框防重入
 let zoomLevel = 0;            // 页面缩放级别
 let logStream = null;         // 日志文件流
+let announcedUrl = null;      // 后端 stdout 公告的实际地址（"dsh web: http://..."，端口 0 时唯一来源）
 
 // 单实例锁
 const gotTheLock = app.requestSingleInstanceLock();
@@ -155,8 +147,9 @@ function startBackend() {
     const cfg = loadConfig();
     const dshArgs = [];
     dshArgs.push(...pluginManager.getManagerPatchArgs());
-    if (cfg.host) dshArgs.push('--host', cfg.host);
-    if (cfg.port) dshArgs.push('--port', String(cfg.port));
+    // 注意端口 0 是合法值（系统随机分配），不能用 truthiness 判断丢弃
+    if (cfg.host !== undefined && cfg.host !== null) dshArgs.push('--host', cfg.host);
+    if (cfg.port !== undefined && cfg.port !== null) dshArgs.push('--port', String(cfg.port));
 
     const backend = spawn(
         'cmd.exe',
@@ -173,7 +166,15 @@ function startBackend() {
 
     const pid = backend.pid;
     // 把后端的日志转发到 Electron 的终端和日志文件
-    backend.stdout.on('data', (d) => appLog('backend', d.toString().trim()));
+    announcedUrl = null;   // 每次启动都重置，等待新的公告
+    backend.stdout.on('data', (d) => {
+        const text = d.toString().trim();
+        appLog('backend', text);
+        // 捕获后端公告的实际地址：配置端口为 0（系统随机分配）时，
+        // 这是应用唯一能得知真实端口的途径
+        const m = /dsh web:\s+(https?:\/\/[^\s]+)/.exec(text);
+        if (m) announcedUrl = m[1].replace(/\/+$/, '');
+    });
     backend.stderr.on('data', (d) => appLog('backend', d.toString().trim()));
     backend.on('exit', (code) => {
         // 已重启出新进程时，旧进程的退出事件直接忽略
@@ -201,18 +202,26 @@ function startBackend() {
     return backend;
 }
 
-// 等后端就绪后自动刷新主窗口：后端重启后已加载的页面还停留在旧插件树/旧外观上，
-// 必须重新拉取一次页面（等效于手动 Ctrl+R）
-async function reloadMainWindowWhenReady() {
-    const ready = await waitForBackend();
+// 等后端就绪后刷新主窗口：后端重启后已加载的页面还停留在旧插件树/旧外观上，
+// 必须重新拉取一次页面。注意端口可能变化（随机端口/改配置），地址不同时
+// 必须用 loadURL 换地址，reload() 只会重试当前 URL
+async function reloadMainWindowWhenReady(timeoutMs = 600000) {
+    const ready = await waitForBackend(timeoutMs);
     if (!ready.ok) {
         appLog('window', 'Backend not ready after restart, skip window reload.');
-        return;
+        return false;
     }
     if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.reload();
-        appLog('window', 'Backend ready after restart, main window reloaded.');
+        const current = mainWindow.webContents.getURL().replace(/\/+$/, '');
+        if (current === ready.url) {
+            mainWindow.webContents.reload();
+        } else {
+            mainWindow.loadURL(ready.url)
+                .catch((err) => appLog('web', 'loadURL failed: ' + err.message));
+        }
+        appLog('window', `Backend ready after restart, main window ${current === ready.url ? 'reloaded' : 'navigated to ' + ready.url}.`);
     }
+    return true;
 }
 
 // 手动重启后端（托盘菜单 / 插件管理器）
@@ -261,6 +270,7 @@ function createTray() {
     tray.setContextMenu(Menu.buildFromTemplate([
         { label: '显示主窗口', click: showMainFromTray },
         { label: '插件管理', click: openPluginManager },
+        { label: '系统设置', click: openSettings },
         { label: '重启后端', click: restartBackend },
         { label: '打开日志文件夹', click: () => shell.openPath(logDir) },
         { type: 'separator' },
@@ -317,6 +327,32 @@ function openPluginManager() {
     appLog('window', 'Plugin manager opened.');
 }
 
+// 打开系统设置窗口（本地页面，使用专属 preload）
+function openSettings() {
+    if (settingsWindow && !settingsWindow.isDestroyed()) {
+        settingsWindow.show();
+        settingsWindow.focus();
+        return;
+    }
+    settingsWindow = new BrowserWindow({
+        width: 420,
+        height: 400,
+        title: '系统设置 - DeepSeek Harness',
+        icon: path.join(__dirname, '..', 'Assets', 'dsh.ico'),
+        backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0e16' : '#f4f6fb',
+        webPreferences: {
+            preload: path.join(__dirname, '..', 'Preload', 'preload-settings.js'),
+            nodeIntegration: false,
+            contextIsolation: true,
+        },
+    });
+    settingsWindow.removeMenu();
+    settingsWindow.loadFile(path.join(__dirname, '..', 'Pages', 'settings.html'))
+        .catch((err) => appLog('window', 'Failed to load settings: ' + err.message));
+    settingsWindow.on('closed', () => { settingsWindow = null; });
+    appLog('window', 'Settings opened.');
+}
+
 // 启动动画（Splash）窗口
 function createSplash() {
     splashWindow = new BrowserWindow({
@@ -343,12 +379,12 @@ function createSplash() {
     appLog('window', 'Splash shown.');
 }
 
-// 轮询等待就绪：每次轮询重新读取 Config/config.json，
-// 自动跟上 dsh web 因端口冲突/系统保留而回退后的实际端口
+// 轮询等待就绪：每次轮询重新读取 Config/config.json（dsh web 回退端口时写回该文件），
+// 同时优先采用后端 stdout 公告的实际地址（配置端口为 0 = 系统随机分配时，这是唯一来源）
 async function waitForBackend(timeoutMs = 600000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-        const url = loadDshUrl();
+        const url = announcedUrl || loadDshUrl();
         try {
             const res = await fetch(url);
             if (res.ok) {
@@ -360,7 +396,7 @@ async function waitForBackend(timeoutMs = 600000) {
         }
         await new Promise((r) => setTimeout(r, 1000));
     }
-    return { ok: false, url: loadDshUrl() };
+    return { ok: false, url: announcedUrl || loadDshUrl() };
 }
 
 // 主窗口
@@ -481,6 +517,21 @@ async function createWindow() {
     mainWindow.webContents.on('did-fail-load', (_event, code, desc, url, isMainFrame) => {
         if (!isMainFrame || code === -3) return;  // -3 = ERR_ABORTED，忽略
         appLog('web', `Failed to load: ${code} ${desc} ${url}`);
+
+        // 连接类失败（-102 拒绝连接 / -105 域名解析 / -106 网络不可达）：
+        // 常见于后端重启或端口迁移的窗口期，等后端就绪后自动加载实际地址，
+        // 而不是直接退出应用
+        if (code === -102 || code === -105 || code === -106) {
+            reloadMainWindowWhenReady(30000).then((ok) => {
+                if (!ok && mainWindow && !mainWindow.isDestroyed()) {
+                    dialog.showErrorBox('Error', `Failed to load DSH: ${desc} (${code})`);
+                    isQuitting = true;
+                    app.quit();
+                }
+            });
+            return;
+        }
+
         if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
         dialog.showErrorBox('Error', `Failed to load DSH: ${desc} (${code})`);
         isQuitting = true;
@@ -513,6 +564,7 @@ if (!gotTheLock) {
         createSplash();   // 先显示启动动画
         createTray();     // 系统托盘
         pluginManager.initPluginManager({ ipcMain, restartBackend, appLog, shell });
+        settings.initSettings({ ipcMain, restartBackend, appLog });
 
         try {
             backendProcess = startBackend();  // 启动DSH
