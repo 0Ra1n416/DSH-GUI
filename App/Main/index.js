@@ -9,6 +9,12 @@ const settings = require('./settings');
 const codeDir = path.join(__dirname, '..', '..');
 const loadConfig = settings.loadConfig;
 
+// 配置路径：打包后位于应用主目录（安装目录\Config\config.json，随安装包分发），
+// 安装器的"端口设置"页会直接改写它；开发模式沿用项目根目录 Config/config.json
+settings.setConfigPath(app.isPackaged
+    ? path.join(path.dirname(process.execPath), 'Config', 'config.json')
+    : path.join(codeDir, 'Config', 'config.json'));
+
 // 读取"实际"后端地址：dsh web 在端口被占用/系统保留时会回退端口，
 // 并把实际端口写回 Config/config.json —— 每次使用时重新读取，紧跟实际状态
 function loadDshUrl() {
@@ -146,17 +152,6 @@ function handleBackendDown(reason, opts = {}) {
 
 // 启动 DSH 服务
 function startBackend() {
-    let cmd, cwd;
-
-    if (app.isPackaged) {
-        // 生产模式下启动（打包发布前需要实现）
-        throw new Error('Packaged mode is not implemented yet.');
-    } else {
-        // 开发模式下直接启动
-        cmd = path.join(codeDir, 'Code', 'start-dsh.cmd');
-        cwd = codeDir;
-    }
-
     // 命令行参数：插件管理器覆盖层 --patch 必须排在 host / port 之前，
     // 再附上 config.json 里的 host / port（每次启动都重新读取，跟上回退后的端口）
     const cfg = loadConfig();
@@ -166,13 +161,27 @@ function startBackend() {
     if (cfg.host !== undefined && cfg.host !== null) dshArgs.push('--host', cfg.host);
     if (cfg.port !== undefined && cfg.port !== null) dshArgs.push('--port', String(cfg.port));
 
+    let command, spawnArgs, cwd;
+    if (app.isPackaged) {
+        // 打包模式：不依赖项目里的 start-dsh.cmd，直接通过 npx 启动
+        // （需要目标机器装有 Node.js/npm；安装器的环境检测页会提示这一点）
+        command = 'cmd.exe';
+        spawnArgs = ['/c', `"npx -y @deepseek-ai/dsh web ${dshArgs.map(pluginManager.quoteArg).join(' ')}"`];
+        cwd = app.getPath('userData');
+    } else {
+        // 开发模式：走项目里的 start-dsh.cmd（含 Node 检查、UTF-8 代码页等）
+        command = 'cmd.exe';
+        spawnArgs = ['/c', `"${path.join(codeDir, 'Code', 'start-dsh.cmd')}" ${dshArgs.join(' ')}`];
+        cwd = codeDir;
+    }
+
     const backend = spawn(
-        'cmd.exe',
-        ['/c', `"${cmd}" ${dshArgs.join(' ')}`],
+        command,
+        spawnArgs,
         {
             cwd: cwd,
             windowsHide: true,   // 隐藏命令行黑窗口
-            // stdin 置为 ignore：让 start-dsh.cmd 末尾的 pause 读到 EOF 立即返回，
+            // stdin 置为 ignore：让批处理里可能的 pause 读到 EOF 立即返回，
             // 避免后端退出后留下隐藏的 cmd 残留进程
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsVerbatimArguments: true,

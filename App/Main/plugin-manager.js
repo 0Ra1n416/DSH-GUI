@@ -211,6 +211,7 @@ function approveBuilds(names) {
 function runDshPlugin(args, onLine) {
     return new Promise((resolve) => {
         const cmdline = `"npx -y @deepseek-ai/dsh plugin --profile ${PROFILE_NAME} ${args.map(quoteArg).join(' ')}"`;
+        try { fs.mkdirSync(PROFILE_DIR, { recursive: true }); } catch (e) { /* 已存在等情况 */ }
         const child = spawn(
             'cmd.exe',
             ['/c', cmdline],

@@ -1,0 +1,36 @@
+appId: com.dsh.gui
+productName: DSH-GUI
+
+directories:
+  output: dist          # 安装包输出到项目根目录 dist/
+  buildResources: build
+
+files:
+  - App/**
+  - Config/config.json   # 随包分发，安装器的端口设置页会改写安装目录下的这份配置
+  - package.json
+
+asar: true
+npmRebuild: false   # 应用无原生依赖，跳过 @electron/rebuild（更快且避免构建环境问题）
+
+win:
+  icon: App/Assets/dsh.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DeepSeek Harness
+  artifactName: DSH-GUI-Setup-${version}.${ext}
+  installerIcon: App/Assets/dsh.ico
+  uninstallerIcon: App/Assets/dsh.ico
+  installerHeaderIcon: App/Assets/dsh.ico
+  installerHeader: build/installerHeader.bmp
+  installerSidebar: build/installerSidebar.bmp
+  include: build/installer.nsh

@@ -1,1 +1,8 @@
 node_modules/
+
+# 构建产物与缓存
+dist/
+.eb-cache/
+.npmcache-tmp/
+.pnpm-store/
+.pnpm-store-tmp/

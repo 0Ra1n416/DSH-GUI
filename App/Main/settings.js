@@ -3,9 +3,14 @@
 const path = require('path');
 const fs = require('fs');
 
-// 允许测试时用环境变量指向临时文件
-const CONFIG_PATH = process.env.DSH_CONFIG_PATH
-    || path.join(__dirname, '..', '..', 'Config', 'config.json');
+// 配置路径优先级：测试环境变量 > 宿主注入（打包后 = %APPDATA%\DSH-GUI\config.json）> 开发默认
+let injectedPath = null;
+function setConfigPath(p) { injectedPath = p; }
+function getConfigPath() {
+    return process.env.DSH_CONFIG_PATH
+        || injectedPath
+        || path.join(__dirname, '..', '..', 'Config', 'config.json');
+}
 
 // host 约束与 dsh web 实际行为一致：官方启动器出于安全考虑
 // 明确拒绝 --host 0.0.0.0（"would expose remote code execution to the network"）
@@ -15,7 +20,7 @@ const DEFAULT_CONFIG = { host: '127.0.0.1', port: 3080 };
 function loadConfig() {
     const defaults = { ...DEFAULT_CONFIG };
     try {
-        const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+        const cfg = JSON.parse(fs.readFileSync(getConfigPath(), 'utf8'));
         return { ...defaults, ...cfg };
     } catch (err) {
         console.warn('[config] 读取 config.json 失败，使用默认值：', err.message);
@@ -42,7 +47,9 @@ function validateConfig(input) {
 }
 
 function saveConfig(config) {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', 'utf8');
+    const target = getConfigPath();
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify(config, null, 2) + '\n', 'utf8');
 }
 
 // 注册设置窗口的 IPC；保存成功后立即重启后端（就绪后主窗口会自动刷新）
@@ -68,7 +75,8 @@ module.exports = {
     loadConfig,
     validateConfig,
     saveConfig,
-    CONFIG_PATH,
+    setConfigPath,
+    getConfigPath,
     ALLOWED_HOSTS,
     DEFAULT_CONFIG,
 };
