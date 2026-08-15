@@ -549,6 +549,7 @@ async function createWindow() {
     });
 
     // 快捷键：Ctrl+R 刷新 / Ctrl+Shift+R 强制刷新 / F11 全屏 / F12 开发者工具 / Ctrl+=,-,0 缩放
+    //         Ctrl+Alt+P 插件管理 / Ctrl+Alt+S 系统设置（无托盘环境可用）
     mainWindow.webContents.on('before-input-event', (event, input) => {
         if (input.type !== 'keyDown') return;
         const mod = input.control || input.meta;
@@ -557,7 +558,18 @@ async function createWindow() {
             zoomLevel = Math.max(-2, Math.min(2, z));
             mainWindow.webContents.setZoomLevel(zoomLevel);
         };
-        if (mod && key === 'r') {
+        if (mod && input.alt && key === 'p') {
+            event.preventDefault();
+            openPluginManager();
+        } else if (mod && input.alt && key === 's') {
+            event.preventDefault();
+            openSettings();
+        } else if (mod && key === 'q') {
+            // Ctrl+Q：退出应用（等价托盘"退出"，Linux 无托盘时尤其有用）
+            event.preventDefault();
+            isQuitting = true;
+            app.quit();
+        } else if (mod && key === 'r') {
             event.preventDefault();
             if (input.shift) mainWindow.webContents.reloadIgnoringCache();
             else mainWindow.webContents.reload();
@@ -628,8 +640,10 @@ if (!gotTheLock) {
     // 已有实例在运行：直接退出（会触发已有实例的 second-instance 事件）
     app.quit();
 } else {
-    app.on('second-instance', () => {
-        // 重复启动时聚焦已有窗口
+    app.on('second-instance', (_event, argv) => {
+        // 重复启动时聚焦已有窗口；带参数启动时打开对应附属窗口（无托盘环境可用）
+        if (argv && argv.includes('--plugins')) openPluginManager();
+        if (argv && argv.includes('--settings')) openSettings();
         const win = (mainWindow && !mainWindow.isDestroyed())
             ? mainWindow
             : BrowserWindow.getAllWindows()[0];
@@ -658,6 +672,10 @@ if (!gotTheLock) {
         }
 
         await createWindow();  // 等就绪后再建窗口
+
+        // 命令行参数启动的附属窗口（无托盘环境可用）：npm start -- --plugins / --settings
+        if (process.argv.includes('--plugins')) openPluginManager();
+        if (process.argv.includes('--settings')) openSettings();
 
         // macOS 特定：当点击 dock 图标且没有窗口打开时，重新创建/恢复窗口
         app.on('activate', function () {

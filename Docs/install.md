@@ -69,6 +69,10 @@ Linux 版没有安装向导：端口首次用默认值（或随机），进入�
 
 - 首次启动会看到启动动画，后端就绪后自动进入 DSH 界面
 - 点击窗口关闭按钮会**最小化到系统托盘**（后端继续运行）；完全退出请用托盘菜单"退出 DeepSeek Harness"
+- **没有托盘时**（如 GNOME 未启用 AppIndicator 扩展），插件管理和系统设置仍有入口：
+  - 主窗口内按 `Ctrl+Alt+P`（插件管理）/ `Ctrl+Alt+S`（系统设置）
+  - 退出应用：`Ctrl+Q`（等价托盘"退出"）
+  - 或带参数再次启动应用：`DSH-GUI --plugins` / `DSH-GUI --settings`（会转交给已运行实例并打开对应窗口）
 - 托盘菜单：
   - **显示主窗口** —— 从托盘恢复窗口
   - **插件管理** —— 安装/启停/卸载 DSH 插件（npm 包、本地目录、Git 仓库）
@@ -92,6 +96,17 @@ Linux 版没有安装向导：端口首次用默认值（或随机），进入�
 ## 常见问题
 
 - **双击启动后没有窗口**：多半缺少 Node.js/npm。看日志（路径见上表）；Windows 上重装时勾选环境检查可提前发现
+- **Linux + npm 12 启动报 `Failed to load native module: pty.node`（`prebuilds/linux-x64`）**：dsh 的 node-pty 依赖包里不含 Linux 预编译二进制，需要安装脚本现场编译；而 **npm 12 默认拦截安装脚本**（或机器缺编译工具链），导致 `pty.node` 缺失。这是 dsh 上游与 npm 12 新策略的兼容性问题，并非本应用 bug。解决：
+  1. **临时解锁**（工具链需在：`sudo apt install -y build-essential python3`）：
+     ```bash
+     cd ~/.npm/_npx/1e7f6d9597241db0/node_modules/node-pty
+     npx --yes node-gyp rebuild
+     ```
+  2. **降级解决**（*推荐*：降级到策略之前的 npm，让安装脚本恢复默认放行）：
+     ```bash
+     npm install -g npm@11.13.0     # 权限不足时加 sudo
+     rm -rf ~/.npm/_npx
+     ```
 - **弹窗"端口绑定失败（EACCES）"**：端口被系统保留（Windows 常见于 Hyper-V/WSL 保留段）。点"重启（端口设为 0）"改用随机端口，或改配置文件换端口
 - **第一次启动很慢**：正在下载 dsh，属正常；Windows 安装时用"预载"可提前完成
 - **窗口只剩托盘图标**：关闭按钮是"最小化到托盘"，用托盘菜单恢复或退出
