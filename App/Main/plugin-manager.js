@@ -210,18 +210,20 @@ function approveBuilds(names) {
 // 也以该目录为锚点解析相对路径，两边保持一致
 function runDshPlugin(args, onLine) {
     return new Promise((resolve) => {
-        const cmdline = `"npx -y @deepseek-ai/dsh plugin --profile ${PROFILE_NAME} ${args.map(quoteArg).join(' ')}"`;
+        const quoted = args.map(quoteArg).join(' ');
         try { fs.mkdirSync(PROFILE_DIR, { recursive: true }); } catch (e) { /* 已存在等情况 */ }
-        const child = spawn(
-            'cmd.exe',
-            ['/c', cmdline],
-            {
+        const isWin = process.platform === 'win32';
+        const child = isWin
+            ? spawn('cmd.exe', ['/c', `"npx -y @deepseek-ai/dsh plugin --profile ${PROFILE_NAME} ${quoted}"`], {
                 cwd: PROFILE_DIR,
                 windowsHide: true,
                 stdio: ['ignore', 'pipe', 'pipe'],
                 windowsVerbatimArguments: true,
-            }
-        );
+            })
+            : spawn('bash', ['-lc', `npx -y @deepseek-ai/dsh plugin --profile ${PROFILE_NAME} ${quoted}`], {
+                cwd: PROFILE_DIR,
+                stdio: ['ignore', 'pipe', 'pipe'],
+            });
         const feed = (buf) => {
             for (const line of buf.toString().split(/\r?\n/)) {
                 if (line.trim()) onLine(line);

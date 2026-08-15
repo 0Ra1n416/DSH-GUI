@@ -9,7 +9,7 @@ DSH-GUI 本体以 [MIT License](LICENSE) 发布。本项目使用了以下第三
 | Electron | MIT | 桌面运行时；其自带 `LICENSE.electron.txt` 随包分发 |
 | Chromium | BSD-3-Clause 等 | Electron 内嵌浏览器引擎；`LICENSES.chromium.html` 随包分发 |
 
-## 随安装器分发（构建工具链产物）
+## 随安装器分发（构建工具链产物，仅 Windows 安装包）
 
 | 组件 | 许可 | 说明 |
 |---|---|---|

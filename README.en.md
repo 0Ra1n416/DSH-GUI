@@ -23,7 +23,7 @@ A learning project built for "working the way I like": wrapping the DeepSeek Har
 A few small touches I find handy (not bold enough to call advantages):
 
 - **Plugin manager**: install from npm / local directory (link or copy) / Git repository, enable/disable/uninstall, automatic pnpm build-script approval
-- **Installer**: NSIS wizard (port setup → optional environment check → optional dsh preload), ready out of the box
+- **Installer**: Windows ships an NSIS wizard (port setup → optional environment check → optional dsh preload); Linux ships AppImage / deb, ready out of the box
 - **Port self-healing**: random port support; when a port is occupied or system-reserved, one click switches to a random port and restarts; the main window follows automatically
 - **Readable errors**: backend-failure dialogs show the key output directly, no log digging
 - **Daily details**: close-to-tray, window-position memory, shortcuts, external links via system browser, log-to-file
@@ -43,13 +43,13 @@ Special thanks to the DeepSeek team and the DeepSeek Harness ecosystem.
 - **Window experience**: remembers window position, size, and zoom; shortcuts Ctrl+R reload, Ctrl+Shift+R hard reload, F11 fullscreen, F12 DevTools, Ctrl+=/-/0 zoom; external links always open in the system browser
 - **Simple external plugin manager**: standalone window; installs plugins from npm packages / local directories (link or copy install) / Git repositories; enable/disable/uninstall; automatically handles pnpm build-script approval — no need to dig through the official settings UI
 - **Settings**: edit backend host/port visually; saving restarts the backend and refreshes the main window automatically
-- **Installer**: NSIS wizard (port setup → optional environment check → optional dsh preload), ready to use out of the box
+- **Installer**: Windows ships an NSIS wizard installer (port setup → optional environment check → optional dsh preload); Linux ships AppImage / deb, ready to use out of the box
 
 ## Requirements
 
 | Scenario | Requirements |
 |---|---|
-| Run from source / build | Windows, Node.js ≥ 22.19 (24+ recommended), npm |
+| Run from source / build | Windows or Linux, Node.js ≥ 22.19 (24+ recommended), npm |
 | Installed app | Node.js + npm (backend is launched via `npx`); **pnpm** only for installing/uninstalling plugins in the plugin manager |
 
 ## Quick Start (from source)
@@ -72,12 +72,12 @@ Development-mode config lives in `Config/config.json` (host / port; editable via
 
 ## Building the Installer
 
-```bash
-npm run dist    # NSIS installer → dist/DSH-GUI-Setup-<version>.exe
-npm run pack    # unpacked directory → dist/win-unpacked/ (for debugging)
-```
+| Platform | Command | Artifacts |
+|---|---|---|
+| Windows | `npm run dist` | `dist/DSH-GUI-Setup-<version>.exe` (NSIS wizard installer) |
+| Linux | `npm run dist -- --linux` | `dist/*.AppImage` / `dist/*.deb` (requires Linux or Docker) |
 
-See [Docs/build.md](Docs/build.md) (Chinese) for details.
+For debugging: `npm run pack` produces only the unpacked directory. See [Docs/build.md](Docs/build.md) (Chinese) for details.
 
 ## Project Layout
 
@@ -87,7 +87,7 @@ App/
   Pages/          Splash, plugin manager (html/css/js trio), settings
   Preload/        Per-window contextBridge scripts (privilege-isolated from the remote DSH page)
   Assets/         Icons and logo
-Code/             Backend launcher script for development (start-dsh.cmd)
+Code/             Backend launcher script for development (start-dsh.cmd / start-dsh.sh)
 Config/           Development-mode config (config.json)
 build/            NSIS installer script and assets
 Docs/             Documentation (packaging, install & usage)

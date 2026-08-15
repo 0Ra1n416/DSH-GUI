@@ -34,3 +34,13 @@ nsis:
   installerHeader: build/installerHeader.bmp
   installerSidebar: build/installerSidebar.bmp
   include: build/installer.nsh
+
+linux:
+  icon: App/Assets/dsh.png
+  category: Development
+  maintainer: 0Ra1n416 <2576534771@qq.com>
+  synopsis: DeepSeek Harness desktop shell
+  description: Desktop shell for DeepSeek Harness (DSH) — backend hosting, system tray, plugin manager.
+  target:
+    - AppImage
+    - deb

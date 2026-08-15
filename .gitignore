@@ -6,3 +6,6 @@ dist/
 .npmcache-tmp/
 .pnpm-store/
 .pnpm-store-tmp/
+
+# 开发TODO文件
+TODO.md

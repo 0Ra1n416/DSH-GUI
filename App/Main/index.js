@@ -9,10 +9,18 @@ const settings = require('./settings');
 const codeDir = path.join(__dirname, '..', '..');
 const loadConfig = settings.loadConfig;
 
-// 配置路径：打包后位于应用主目录（安装目录\Config\config.json，随安装包分发），
-// 安装器的"端口设置"页会直接改写它；开发模式沿用项目根目录 Config/config.json
+// 配置路径（打包模式）：
+// - Windows：应用主目录（安装目录\Config\config.json，随安装包分发，安装器的"端口设置"页会改写它）
+// - Linux/macOS：userData（XDG 目录，AppImage 只读挂载无法写安装目录）
+// 开发模式统一用项目根目录 Config/config.json
+function resolvePackagedConfigPath() {
+    if (process.platform === 'win32') {
+        return path.join(path.dirname(process.execPath), 'Config', 'config.json');
+    }
+    return path.join(app.getPath('userData'), 'config.json');
+}
 settings.setConfigPath(app.isPackaged
-    ? path.join(path.dirname(process.execPath), 'Config', 'config.json')
+    ? resolvePackagedConfigPath()
     : path.join(codeDir, 'Config', 'config.json'));
 
 // 读取"实际"后端地址：dsh web 在端口被占用/系统保留时会回退端口，
@@ -38,8 +46,13 @@ let announcedUrl = null;      // 后端 stdout 公告的实际地址（"dsh web:
 // 单实例锁
 const gotTheLock = app.requestSingleInstanceLock();
 
-// Windows 任务栏分组 / 通知标识
-app.setAppUserModelId('DSH-GUI');
+// Windows 任务栏分组 / 通知标识（仅 Windows 有效）
+if (process.platform === 'win32') app.setAppUserModelId('DSH-GUI');
+
+// 图标：Windows 用 .ico；Linux/macOS 用 PNG
+const ICON_PATH = process.platform === 'win32'
+    ? path.join(__dirname, '..', 'Assets', 'dsh.ico')
+    : path.join(__dirname, '..', 'Assets', 'dsh.png');
 
 // 日志目录（userData = %APPDATA%\DSH-GUI）
 const logDir = path.join(app.getPath('userData'), 'logs');
@@ -161,18 +174,26 @@ function startBackend() {
     if (cfg.host !== undefined && cfg.host !== null) dshArgs.push('--host', cfg.host);
     if (cfg.port !== undefined && cfg.port !== null) dshArgs.push('--port', String(cfg.port));
 
+    const isWin = process.platform === 'win32';
     let command, spawnArgs, cwd;
-    if (app.isPackaged) {
-        // 打包模式：不依赖项目里的 start-dsh.cmd，直接通过 npx 启动
-        // （需要目标机器装有 Node.js/npm；安装器的环境检测页会提示这一点）
-        command = 'cmd.exe';
-        spawnArgs = ['/c', `"npx -y @deepseek-ai/dsh web ${dshArgs.map(pluginManager.quoteArg).join(' ')}"`];
-        cwd = app.getPath('userData');
+    if (isWin) {
+        if (app.isPackaged) {
+            // Windows 打包模式：不依赖项目里的 start-dsh.cmd，直接通过 npx 启动
+            // （需要目标机器装有 Node.js/npm；安装器的环境检测页会提示这一点）
+            command = 'cmd.exe';
+            spawnArgs = ['/c', `"npx -y @deepseek-ai/dsh web ${dshArgs.map(pluginManager.quoteArg).join(' ')}"`];
+            cwd = app.getPath('userData');
+        } else {
+            // Windows 开发模式：走项目里的 start-dsh.cmd（含 Node 检查、UTF-8 代码页等）
+            command = 'cmd.exe';
+            spawnArgs = ['/c', `"${path.join(codeDir, 'Code', 'start-dsh.cmd')}" ${dshArgs.join(' ')}`];
+            cwd = codeDir;
+        }
     } else {
-        // 开发模式：走项目里的 start-dsh.cmd（含 Node 检查、UTF-8 代码页等）
-        command = 'cmd.exe';
-        spawnArgs = ['/c', `"${path.join(codeDir, 'Code', 'start-dsh.cmd')}" ${dshArgs.join(' ')}`];
-        cwd = codeDir;
+        // Linux/macOS：直接经 bash 用 npx 启动（打包与开发一致，不依赖 .cmd 脚本）
+        command = 'bash';
+        spawnArgs = ['-lc', `npx -y @deepseek-ai/dsh web ${dshArgs.map(pluginManager.quoteArg).join(' ')}`];
+        cwd = app.isPackaged ? app.getPath('userData') : codeDir;
     }
 
     const backend = spawn(
@@ -180,11 +201,13 @@ function startBackend() {
         spawnArgs,
         {
             cwd: cwd,
-            windowsHide: true,   // 隐藏命令行黑窗口
+            windowsHide: true,   // Windows：隐藏命令行黑窗口
             // stdin 置为 ignore：让批处理里可能的 pause 读到 EOF 立即返回，
             // 避免后端退出后留下隐藏的 cmd 残留进程
             stdio: ['ignore', 'pipe', 'pipe'],
-            windowsVerbatimArguments: true,
+            ...(isWin ? { windowsVerbatimArguments: true } : {}),
+            // 非 Windows：独立进程组，退出时按组清理，避免残留 npx/node 子进程
+            detached: !isWin,
         }
     );
 
@@ -270,14 +293,24 @@ async function reloadMainWindowWhenReady(timeoutMs = 600000) {
 }
 
 // 手动重启后端（托盘菜单 / 插件管理器）
-function restartBackend() {
-    if (backendProcess) {
+// 结束后端进程树：Windows 用 taskkill /T；其他平台杀整个进程组（spawn 时 detached）
+function killBackendTree() {
+    if (!backendProcess) return;
+    try {
         if (process.platform === 'win32') {
             spawnSync('taskkill', ['/pid', String(backendProcess.pid), '/T', '/F']);
         } else {
-            backendProcess.kill();
+            try {
+                process.kill(-backendProcess.pid, 'SIGTERM');
+            } catch (e) {
+                backendProcess.kill();
+            }
         }
-    }
+    } catch (e) { /* 进程可能已退出 */ }
+}
+
+function restartBackend() {
+    killBackendTree();
     try {
         backendProcess = startBackend();
         appLog('backend', 'Manually restarted.');
@@ -300,6 +333,8 @@ function showMainFromTray() {
 }
 
 function setAutoLaunch(enabled) {
+    // 开机自启仅支持 Windows / macOS；Linux 下（AppImage 等）无标准机制，静默忽略
+    if (process.platform !== 'win32' && process.platform !== 'darwin') return;
     if (app.isPackaged) {
         app.setLoginItemSettings({ openAtLogin: enabled });
     } else {
@@ -309,7 +344,7 @@ function setAutoLaunch(enabled) {
 }
 
 function createTray() {
-    const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'Assets', 'dsh.ico'));
+    const icon = nativeImage.createFromPath(ICON_PATH);
     tray = new Tray(icon.resize({ width: 16, height: 16 }));
     tray.setToolTip('DeepSeek Harness');
     tray.setContextMenu(Menu.buildFromTemplate([
@@ -343,7 +378,7 @@ function openPluginManager() {
         width: 880,
         height: 620,
         title: '插件管理 - DeepSeek Harness',
-        icon: path.join(__dirname, '..', 'Assets', 'dsh.ico'),
+        icon: ICON_PATH,
         backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0e16' : '#f4f6fb',
         webPreferences: {
             preload: path.join(__dirname, '..', 'Preload', 'preload-plugins.js'),
@@ -383,7 +418,7 @@ function openSettings() {
         width: 420,
         height: 400,
         title: '系统设置 - DeepSeek Harness',
-        icon: path.join(__dirname, '..', 'Assets', 'dsh.ico'),
+        icon: ICON_PATH,
         backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0e16' : '#f4f6fb',
         webPreferences: {
             preload: path.join(__dirname, '..', 'Preload', 'preload-settings.js'),
@@ -471,7 +506,7 @@ async function createWindow() {
         x: useBounds ? st.bounds.x : undefined,
         y: useBounds ? st.bounds.y : undefined,
         show: false,
-        icon: path.join(__dirname, '..', 'Assets', 'dsh.ico'),
+        icon: ICON_PATH,
         backgroundColor: '#0b0e16',   // 与 DSH 深色主题一致，防止加载时白闪
         webPreferences: {
             // 指定预加载脚本
@@ -642,12 +677,7 @@ if (!gotTheLock) {
 app.on('before-quit', () => {
     isQuitting = true;
     if (backendProcess) {
-        if (process.platform === 'win32') {
-            // 用 taskkill /T /F 递归杀掉整个进程树
-            spawnSync('taskkill', ['/pid', String(backendProcess.pid), '/T', '/F']);
-        } else {
-            backendProcess.kill();
-        }
+        killBackendTree();
         backendProcess = null;
     }
     if (logStream) {

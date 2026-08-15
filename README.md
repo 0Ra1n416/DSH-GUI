@@ -41,13 +41,13 @@ DeepSeek Harness 的简易桌面壳：用 Electron 把 [DeepSeek Harness](https:
 - **窗口体验**：记住窗口位置、大小与缩放；快捷键 Ctrl+R 刷新、Ctrl+Shift+R 强刷、F11 全屏、F12 开发者工具、Ctrl+=/-/0 缩放；外链一律交系统浏览器
 - **简易外部插件管理器**：独立窗口，支持从 npm 包 / 本地目录（链接或复制安装）/ Git 仓库安装插件，启停/卸载，自动处理 pnpm 构建脚本审批。可以不用在官方的设置中翻了。
 - **系统设置**：可视化修改后端 host/port，保存后自动重启并刷新主窗口
-- **安装包**：NSIS 向导式安装（端口设置 → 可选环境检查 → 可选预载 dsh），开箱即用
+- **安装包**：Windows 提供 NSIS 向导式安装（端口设置 → 可选环境检查 → 可选预载 dsh）；Linux 提供 AppImage / deb，开箱即用
 
 ## 环境要求
 
 | 场景 | 要求 |
 |---|---|
-| 从源码运行 / 打包 | Windows、Node.js ≥ 22.19（推荐 24+）、npm |
+| 从源码运行 / 打包 | Windows 或 Linux、Node.js ≥ 22.19（推荐 24+）、npm |
 | 安装包运行 | Node.js + npm（后端经 `npx` 启动）；**pnpm** 仅插件管理器的安装/卸载需要 |
 
 ## 快速开始（源码运行）
@@ -70,12 +70,12 @@ npm start
 
 ## 构建安装包
 
-```bash
-npm run dist    # NSIS 安装包 → dist/DSH-GUI-Setup-<版本>.exe
-npm run pack    # 免安装目录 → dist/win-unpacked/（调试用）
-```
+| 平台 | 命令 | 产物 |
+|---|---|---|
+| Windows | `npm run dist` | `dist/DSH-GUI-Setup-<版本>.exe`（NSIS 向导安装包） |
+| Linux | `npm run dist -- --linux` | `dist/*.AppImage` / `dist/*.deb`（需 Linux 环境或 Docker） |
 
-详见 [Docs/build.md](Docs/build.md)。
+调试用：`npm run pack` 只出免安装目录。详见 [Docs/build.md](Docs/build.md)。
 
 ## 项目结构
 
@@ -85,7 +85,7 @@ App/
   Pages/          Splash、插件管理器（html/css/js 三件套）、系统设置
   Preload/        各窗口的 contextBridge 桥接（与远程 DSH 页面权限隔离）
   Assets/         图标与 Logo
-Code/             开发模式的后端启动脚本（start-dsh.cmd）
+Code/             开发模式的后端启动脚本（start-dsh.cmd / start-dsh.sh）
 Config/           开发模式配置（config.json）
 build/            NSIS 安装器脚本与素材
 Docs/             文档（打包、安装使用）
