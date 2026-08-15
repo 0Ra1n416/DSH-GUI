@@ -73,9 +73,9 @@ npm start
 | 平台 | 命令 | 产物 |
 |---|---|---|
 | Windows | `npm run dist` | `dist/DSH-GUI-Setup-<版本>.exe`（NSIS 向导安装包） |
-| Linux | `npm run dist -- --linux` | `dist/*.AppImage` / `dist/*.deb`（需 Linux 环境或 Docker） |
+| Linux | `npm run dist` | `dist/*.AppImage` / `dist/*.deb`（需 Linux 环境或 Docker） |
 
-调试用：`npm run pack` 只出免安装目录。详见 [Docs/build.md](Docs/build.md)。
+`npm run dist` 构建当前平台；跨平台用 `npm run dist:win` / `npm run dist:linux`。调试用：`npm run pack` 只出免安装目录。详见 [Docs/build.md](Docs/build.md)。
 
 ## 项目结构
 

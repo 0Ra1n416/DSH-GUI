@@ -7,7 +7,9 @@
 | 平台 | 产物 | 构建命令 | 构建环境 |
 |---|---|---|---|
 | Windows | NSIS 安装包 `DSH-GUI-Setup-<版本>.exe` | `npm run dist` | Windows 本机即可 |
-| Linux | `*.AppImage`、`*.deb` | `npm run dist -- --linux` | Linux 本机（或 Docker，见 [Linux 打包](#linux-打包)） |
+| Linux | `*.AppImage`、`*.deb` | `npm run dist` | Linux 本机（或 Docker，见 [Linux 打包](#linux-打包)） |
+
+`npm run dist` 构建**当前平台**的目标；跨平台显式指定用 `npm run dist:win` / `npm run dist:linux`（等价 `npm run dist -- --win/--linux`）。
 
 ## 通用约定
 
@@ -75,7 +77,7 @@ Linux 产物需要在 Linux 环境构建。方式一，在 Linux 机器上：
 
 ```bash
 npm install
-npm run dist -- --linux    # 产物：dist/*.AppImage 与 dist/*.deb
+npm run dist              # 产物：dist/*.AppImage 与 dist/*.deb
 ```
 
 方式二，在 Windows/macOS 上用 Docker（需要 Docker）：

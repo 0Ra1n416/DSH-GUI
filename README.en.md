@@ -73,9 +73,9 @@ Development-mode config lives in `Config/config.json` (host / port; editable via
 | Platform | Command | Artifacts |
 |---|---|---|
 | Windows | `npm run dist` | `dist/DSH-GUI-Setup-<version>.exe` (NSIS wizard installer) |
-| Linux | `npm run dist -- --linux` | `dist/*.AppImage` / `dist/*.deb` (requires Linux or Docker) |
+| Linux | `npm run dist` | `dist/*.AppImage` / `dist/*.deb` (requires Linux or Docker) |
 
-For debugging: `npm run pack` produces only the unpacked directory. See [Docs/build.md](Docs/build.md) (Chinese) for details.
+`npm run dist` builds the current platform; use `npm run dist:win` / `npm run dist:linux` to target another platform explicitly. For debugging: `npm run pack` produces only the unpacked directory. See [Docs/build.md](Docs/build.md) (Chinese) for details.
 
 ## Project Layout
 
