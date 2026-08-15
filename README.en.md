@@ -2,9 +2,7 @@
 
 # DSH-GUI
 
----
-
-![Static Badge](https://img.shields.io/badge/Desktop-green) ![Static Badge](https://img.shields.io/badge/License-MIT-blue) ![Static Badge](https://img.shields.io/badge/Platform-Windows-yellow)
+![Static Badge](https://img.shields.io/badge/Desktop-yellow) ![Static Badge](https://img.shields.io/badge/License-MIT-green) ![Static Badge](https://img.shields.io/badge/Platform-Windows-blue) ![Static Badge](https://img.shields.io/badge/Platform-Linux-orange)
 
 English | **[中文](README.md)**
 
