@@ -10,7 +10,7 @@ English | **[中文](README.md)**
 
 ---
 
-A lightweight desktop shell for DeepSeek Harness: wraps the [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) web UI in a native Electron window, with built-in backend hosting, a system tray, and a simple plugin manager.
+A lightweight desktop shell for DeepSeek Harness: wraps the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web UI in a native Electron window, with built-in backend hosting, a system tray, and a simple plugin manager.
 
 Installer user guide — **[Docs/install.md](Docs/install.md)** (Chinese)
 
